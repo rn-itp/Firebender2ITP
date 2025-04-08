@@ -22,7 +22,7 @@ app.add_middleware(
 
 OPENAI_API_URL = os.getenv("OPENAI_API_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AI_MODEL = "claude-3-7-sonnet"
+AI_BASE_MODEL = "claude-3-7-sonnet"
 REQUEST_TIMEOUT = 60.0
 
 class Message(BaseModel):
@@ -39,7 +39,7 @@ def convert_anthropic_to_openai(anthropic_request: dict) -> dict:
         })
     
     return {
-        "model": AI_MODEL,
+        "model": AI_BASE_MODEL,
         "messages": messages,
         "max_tokens": anthropic_request.get("max_tokens", 4097),
         "temperature": anthropic_request.get("temperature", 0.7),
@@ -56,7 +56,7 @@ def convert_openai_to_anthropic(openai_response: dict) -> dict:
         "type": "chat.completion",
         "role": "assistant",
         "content": openai_response["choices"][0]["message"]["content"],
-        "model": openai_response.get("model", AI_MODEL),
+        "model": openai_response.get("model", AI_BASE_MODEL),
         "created": openai_response.get("created", 0)
     }
 
