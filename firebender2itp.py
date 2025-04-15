@@ -1,3 +1,5 @@
+from typing import Any
+
 import os
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -7,8 +9,12 @@ import httpx
 import json
 from dotenv import load_dotenv
 from pydantic import BaseModel
+import logging
 
 load_dotenv()
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="Firebender2ITP")
 
@@ -22,24 +28,41 @@ app.add_middleware(
 
 OPENAI_API_URL = os.getenv("OPENAI_API_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AI_BASE_MODEL = "claude-3-7-sonnet"
 REQUEST_TIMEOUT = 60.0
 
-class Message(BaseModel):
-    role: str
-    content: str
+MODEL_MAPPING = {
+    "claude-3-7-sonnet": "claude-3-7-sonnet",
+    "claude-3.5-sonnet": "claude-3-7-sonnet", 
+    "openai-o3-mini": "3o-mini",
+    "gpt-4o": "gpt-4o",
+    "gemini-2.5-pro": "gemini-2.0-flash-001",
+}
+AI_BASE_MODEL = "claude-3-7-sonnet"
 
-def convert_anthropic_to_openai(anthropic_request: dict) -> dict:
-    """Convert Anthropic request format to OpenAI format"""
+# --- Helper Functions ---
+def get_mapped_model(requested_model: str | None) -> tuple[str, str]:
+    """
+    Maps the requested model name to a supported target model.
+    Returns the original requested model name and the mapped model name.
+    """
+    normalized_model = requested_model.lower().replace(" ", "-")
+    target_model = MODEL_MAPPING.get(normalized_model, AI_BASE_MODEL)
+    logger.info(f"Model: '{requested_model}' has been mapped to: '{target_model}'")
+
+
+    return target_model
+
+
+def convert_anthropic_to_openai(anthropic_request: dict, target_model: str) -> dict:
     messages = []
     for message in anthropic_request.get("messages", []):
         messages.append({
             "role": message.get("role", "user"),
             "content": message.get("content", "")
         })
-    
+
     return {
-        "model": AI_BASE_MODEL,
+        "model": target_model,
         "messages": messages,
         "max_tokens": anthropic_request.get("max_tokens", 4097),
         "temperature": anthropic_request.get("temperature", 0.7),
@@ -47,7 +70,6 @@ def convert_anthropic_to_openai(anthropic_request: dict) -> dict:
     }
 
 def convert_openai_to_anthropic(openai_response: dict) -> dict:
-    """Convert OpenAI response format to Anthropic format"""
     if "choices" not in openai_response:
         return openai_response
     
@@ -65,16 +87,29 @@ async def send_request(request_data: dict):
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {OPENAI_API_KEY}'
     }
+    is_stream = request_data.get('stream', False)
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-        resp = await client.post(OPENAI_API_URL + "/chat/completions", headers=headers, json=request_data)
-        if request_data.get('stream'):
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        elif resp.status_code != 200:
-            raise HTTPException(status_code=resp.status_code, detail=resp.text)
-        else:
-            yield resp.content
+        try:
+            async with client.stream("POST", OPENAI_API_URL + "/chat/completions", headers=headers, json=request_data) as resp:
+                # Check for errors early before attempting to stream
+                if resp.status_code != 200:
+                    # Read the error body before raising HTTPException
+                    error_detail_bytes = await resp.aread()
+                    raise HTTPException(status_code=resp.status_code, detail=error_detail_bytes.decode())
+
+                # Stream the response body chunk by chunk if requested
+                if is_stream:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+                else:
+                    # Read the entire body at once for non-streaming requests
+                    full_body = await resp.aread()
+                    yield full_body
+
+        except httpx.RequestError as exc:
+            # Handle network errors during the request process
+            raise HTTPException(status_code=503, detail=f"Service Unavailable: {exc}")
 
 @app.get("/health")
 async def health_check():
@@ -83,7 +118,8 @@ async def health_check():
 @app.post("/v1/messages")
 async def get_messages(request: Request):
     anthropic_request = await request.json()
-    openai_request = convert_anthropic_to_openai(anthropic_request)
+    target_model = get_mapped_model(anthropic_request.get("model"))
+    openai_request = convert_anthropic_to_openai(anthropic_request, target_model)
     stream = openai_request.get("stream", False)
 
     if stream:
@@ -97,13 +133,16 @@ async def get_messages(request: Request):
 @app.post("/v1/chat/completions")
 async def get_completions(request: Request):
     request_data = await request.json()
+    target_model = get_mapped_model(request_data.get("model"))
+    request_data['model'] = target_model
     stream = request_data.get("stream", False)
 
     if stream:
         return StreamingResponse(send_request(request_data), media_type="text/event-stream")
     else:
         async for chunk in send_request(request_data):
-            return json.loads(chunk)
+            openai_response = json.loads(chunk)
+            return openai_response
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
