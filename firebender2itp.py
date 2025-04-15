@@ -33,14 +33,13 @@ REQUEST_TIMEOUT = 60.0
 MODEL_MAPPING = {
     "claude-3-7-sonnet": "claude-3-7-sonnet",
     "claude-3.5-sonnet": "claude-3-7-sonnet", 
-    "openai-o3-mini": "3o-mini",
+    "o3-mini": "3o-mini",
     "gpt-4o": "gpt-4o",
-    "gemini-2.5-pro": "gemini-2.0-flash-001",
 }
 AI_BASE_MODEL = "claude-3-7-sonnet"
 
 # --- Helper Functions ---
-def get_mapped_model(requested_model: str | None) -> tuple[str, str]:
+def get_mapped_model(requested_model: str) -> str:
     """
     Maps the requested model name to a supported target model.
     Returns the original requested model name and the mapped model name.
@@ -92,23 +91,18 @@ async def send_request(request_data: dict):
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         try:
             async with client.stream("POST", OPENAI_API_URL + "/chat/completions", headers=headers, json=request_data) as resp:
-                # Check for errors early before attempting to stream
                 if resp.status_code != 200:
-                    # Read the error body before raising HTTPException
                     error_detail_bytes = await resp.aread()
                     raise HTTPException(status_code=resp.status_code, detail=error_detail_bytes.decode())
 
-                # Stream the response body chunk by chunk if requested
                 if is_stream:
                     async for chunk in resp.aiter_bytes():
                         yield chunk
                 else:
-                    # Read the entire body at once for non-streaming requests
                     full_body = await resp.aread()
                     yield full_body
 
         except httpx.RequestError as exc:
-            # Handle network errors during the request process
             raise HTTPException(status_code=503, detail=f"Service Unavailable: {exc}")
 
 @app.get("/health")
@@ -133,8 +127,7 @@ async def get_messages(request: Request):
 @app.post("/v1/chat/completions")
 async def get_completions(request: Request):
     request_data = await request.json()
-    target_model = get_mapped_model(request_data.get("model"))
-    request_data['model'] = target_model
+    request_data['model'] = get_mapped_model(request_data.get("model"))
     stream = request_data.get("stream", False)
 
     if stream:
