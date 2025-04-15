@@ -36,7 +36,7 @@ MODEL_MAPPING = {
     "o3-mini": "3o-mini",
     "gpt-4o": "gpt-4o",
 }
-AI_BASE_MODEL = "claude-3-7-sonnet"
+AI_BASE_MODEL = "gpt-4o"
 
 # --- Helper Functions ---
 def get_mapped_model(requested_model: str) -> str:
